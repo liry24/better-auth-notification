@@ -1,6 +1,6 @@
 {
     "name": "better-auth-notification",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "User notifications, read state, archiving, and delivery hooks for Better Auth",
     "homepage": "https://github.com/liry24/better-auth-notification#readme",
     "license": "MIT",
