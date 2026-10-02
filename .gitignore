@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+.data
+.consumer-*
+*.tgz
+packages/better-auth-notification/README.md
+packages/better-auth-notification/LICENSE

@@ -1,0 +1,15 @@
+{
+    "$schema": "https://unpkg.com/knip@6/schema.json",
+    "ignoreExportsUsedInFile": true,
+    "workspaces": {
+        ".": {
+            "entry": ["*.config.ts", "test/**/*.test.ts", "test/types.ts"],
+            "project": ["*.ts", "test/**/*.ts"]
+        },
+        "packages/better-auth-notification": {
+            "entry": ["src/{index,client}.ts"],
+            "ignoreDependencies": ["@arethetypeswrong/cli", "better-call"],
+            "project": ["src/**/*.ts!", "*.config.ts"]
+        }
+    }
+}

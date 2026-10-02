@@ -1,0 +1,116 @@
+name: Release
+on:
+    push: { branches: [main] }
+    pull_request: { types: [closed], branches: [main] }
+    workflow_dispatch:
+        inputs:
+            npm-tag: { description: 'npm dist-tag override', required: false, default: '' }
+permissions: {}
+jobs:
+    pr:
+        if: github.event_name == 'push' && !github.event.repository.fork
+        runs-on: ubuntu-latest
+        permissions: { contents: write, pull-requests: write }
+        steps:
+            - uses: danielroe/uppt/pr@65a86313a63b10a6793de6c4ff8614b18e127a71 # v0.6.10
+              with:
+                  packages: packages/better-auth-notification
+                  token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Find the stable release PR
+              id: release-pr
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  branch=$(gh pr list --base "$GITHUB_REF_NAME" --state open --limit 100 --json headRefName,headRepositoryOwner |
+                    jq -r --arg owner "$GITHUB_REPOSITORY_OWNER" '[.[] | select(.headRepositoryOwner.login == $owner) | .headRefName | select(test("^release/v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | if length == 0 then "" elif length == 1 then .[0] else error("Multiple stable release PRs") end')
+                  echo "branch=$branch" >> "$GITHUB_OUTPUT"
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              if: steps.release-pr.outputs.branch != ''
+              with:
+                  fetch-depth: 0
+                  ref: ${{ steps.release-pr.outputs.branch }}
+            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              if: steps.release-pr.outputs.branch != ''
+              with: { bun-version-file: package.json }
+            - name: Sync the release branch
+              if: steps.release-pr.outputs.branch != ''
+              env:
+                  RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
+              run: |
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+                  git fetch origin "$GITHUB_REF_NAME"
+                  if ! git merge --no-commit --no-ff "origin/$GITHUB_REF_NAME"; then
+                    [[ "$(git diff --name-only --diff-filter=U)" == bun.lock ]]
+                    git checkout --theirs -- bun.lock
+                    git add bun.lock
+                  fi
+                  bun install --lockfile-only --ignore-scripts
+                  git add bun.lock
+                  if git rev-parse -q --verify MERGE_HEAD >/dev/null || ! git diff --cached --quiet; then
+                    git commit -m 'chore: sync release branch with main'
+                    git push origin "HEAD:refs/heads/$RELEASE_BRANCH"
+                  fi
+    release:
+        if: github.event_name == 'pull_request' && github.event.pull_request.merged ==
+            true && startsWith(github.event.pull_request.head.ref, 'release/v') &&
+            !github.event.repository.fork
+        runs-on: ubuntu-latest
+        permissions: { actions: write, contents: write }
+        steps:
+            - uses: danielroe/uppt/release@65a86313a63b10a6793de6c4ff8614b18e127a71 # v0.6.10
+              with:
+                  packages: packages/better-auth-notification
+                  token: ${{ secrets.GITHUB_TOKEN }}
+    pack:
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref,
+            'refs/tags/v')
+        runs-on: ubuntu-latest
+        permissions: { contents: read, actions: read }
+        timeout-minutes: 30
+        outputs: { files: '${{ steps.pack.outputs.files }}' }
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with: { persist-credentials: false }
+            - name: Require successful CI for the tagged commit
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  sha=$(git rev-parse HEAD)
+                  for attempt in {1..60}; do
+                    run_id=$(gh run list --workflow ci.yml --commit "$sha" --event push --limit 1 --json databaseId --jq '.[0].databaseId')
+                    if [[ -n "$run_id" && "$run_id" != null ]]; then break; fi
+                    sleep 5
+                  done
+                  [[ -n "$run_id" && "$run_id" != null ]]
+                  gh run watch "$run_id" --exit-status
+                  gh run view "$run_id" --json jobs --jq '.jobs[] | select(.name == "ci-ok") | .conclusion' | grep -qx success
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with: { node-version: 24 }
+            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with: { bun-version-file: package.json }
+            - run: bun ci --ignore-scripts
+            - id: pack
+              uses: danielroe/uppt/pack@65a86313a63b10a6793de6c4ff8614b18e127a71 # v0.6.10
+              with:
+                  checkout: false
+                  install: false
+                  packages: packages/better-auth-notification
+            - name: Verify the exact release artifact
+              env:
+                  PACKED_FILES: ${{ steps.pack.outputs.files }}
+              run: |
+                  tarball=$(jq -er 'if length == 1 then .[0] else error("Expected one release tarball") end' <<< "$PACKED_FILES")
+                  NOTIFICATION_TARBALL="$RUNNER_TEMP/uppt-pack/$tarball" bun run test:consumer
+    publish:
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref,
+            'refs/tags/v') && needs.pack.outputs.files != '[]'
+        needs: pack
+        runs-on: ubuntu-latest
+        environment: npm
+        permissions: { id-token: write }
+        steps:
+            - uses: danielroe/uppt/publish@65a86313a63b10a6793de6c4ff8614b18e127a71 # v0.6.10
+              with:
+                  files: ${{ needs.pack.outputs.files }}
+                  npm-tag: ${{ inputs.npm-tag }}
